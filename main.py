@@ -1,35 +1,76 @@
 # Katlamaja alarm
-# Versioon: 1.0
+# Versioon: 1.1
 # SCAN PRODUCTION OÜ
 
-import RPi.GPIO as GPIO
 import serial
+import time
+import RPi.GPIO as GPIO
 
-# Jadapordi seadistamine GSM-mooduliga suhtlemiseks.
-ser = serial.Serial(
-    port = '/dev/ttyS0',
-    baudrate = 9600,
-    parity = serial.PARITY_NONE,
-    stopbits = serial.STOPBITS_ONE,
-    bytesize = serial.EIGHTBITS,
-    timeout = 1
-)
+# Seadistan serial porti ja baud rate SIM7600 mooduli jaoks.
+port = '/dev/ttyUSB0'
+baud = 115200
 
-# Seadistan GPIO pini alarmi signaali saamiseks
-signal_pin = 18
+# Seadistan numbri, kuhu helistada
+phone_number = "Sisesta number siia"
+
+# Määran SIM7600 mooduli RX ja TX pinid
+rx_pin = 26
+tx_pin = 19
+
+# Seadistan debounce time sisendsignaali jaoks
+debounce_time = 0.5
+
+# Käivitan GPIO library
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(signal_pin, GPIO.IN)
 
-# Telefoninumber, kuhu sõnum saata
-phone_number = '+37200000000'
+# Seadistan RX ja TX pins sisenditeks
+GPIO.setup(rx_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(tx_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# SMS teksti sisu
-sms_text = 'Katlamaja alarm'
+# Avan serial porti, et ühenduda SIM7600 mooduliga
+ser = serial.Serial(port, baud, timeout=5)
 
-# Kontrollin pidevalt turvasüsteemi signaali
+# Seadistan booleani, kas alarm on käivitatud või mitte.
+alarm_triggered = False
+
+# Jätkan sisendi kontrollimist SIM7600 mooduli RX pinil.
 while True:
-    if GPIO.input(signal_pin):
-        # Saadan sõnumi SMS-mooduli abil
-        ser.write('AT+CMGS="{}"\r\n'.format(phone_number).encode())
-        ser.write('{}\r\n'.format(sms_text).encode())
-        ser.write(bytes([26]))
+    # Loen signaali RX pinil.
+    signal = GPIO.input(rx_pin)
+
+    # Kontrollin, kas signaal on käivitatud pärast signaali kättesaamist RX pinilt.
+    if signal == 0 and not alarm_triggered:
+        # Määran booleani, et alarm on käivitatud.
+        alarm_triggered = True
+
+        # Jätkan pidevalt helistamist, kuni kõnele vastatakse.
+        while True:
+            # Saadan AT käsu, et teha kõne
+            ser.write(f'ATD{phone_number};\r\n'.encode())
+
+            # Ootan vastust SIM7600 moodulilt
+            response = ser.readline().decode().strip()
+
+            # Kontrollin kas kõnele vastati, või kõnest keelduti
+            if "NO ANSWER" in response or "BUSY" in response or "NO CARRIER" in response:
+                # Kõnele ei vastatud ja kõnest ei keeldutud, seega saame loopist välja
+                break
+
+            # Kõnele vastati, seega ootame signaali SIM7600 mooduli RX pinilt.
+            while True:
+                # Loen signaali RX-pinilt
+                signal = GPIO.input(rx_pin)
+
+                # Kontrollin kas kõnest keelduti
+                if signal == 1:
+                    # Kõnest keelduti, seega saame loopist välja
+                    break
+
+        # Lähtestan muutuja, mis näitab, et alarm on käivitatud.
+        alarm_triggered = False
+
+    # Ootan debounce aja enne signaali kontrollimist.
+    time.sleep(debounce_time)
+
+# Sulgen serial port.
+ser.close()
